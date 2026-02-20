@@ -157,23 +157,21 @@ Return ONLY a valid JSON array with exactly {len(emails)} objects in the same or
 # ── Slack ─────────────────────────────────────────────────────────────────────
 
 def post_digest_to_slack(webhook_url, emails, scores):
-    """Post a full prioritized email digest to Slack as a single message."""
-    # Pair and sort by priority descending
+    """Post action-needed emails to Slack, sorted by priority descending."""
     paired = sorted(
-        zip(emails, scores),
+        ((e, s) for e, s in zip(emails, scores) if s["action_needed"]),
         key=lambda x: x[1]["priority"],
         reverse=True,
     )
 
     date_str = datetime.now().strftime("%b %d, %Y")
-    lines = [f"*📬 Email Digest — {date_str} — {len(emails)} unread*\n"]
+    lines = [f"*⚡ Action needed — {date_str} — {len(paired)} email(s)*\n"]
 
     for email, score in paired:
         emoji = PRIORITY_EMOJI.get(score["priority"], "⚪")
         link = gmail_link(email["id"])
-        action_tag = " ⚡ *Action needed*" if score["action_needed"] else ""
         lines.append(
-            f"{emoji} *[{score['priority']}] {email['subject']}*{action_tag}\n"
+            f"{emoji} *[{score['priority']}] {email['subject']}*\n"
             f"From: {email['sender']}\n"
             f"_{score['reason']}_\n"
             f"<{link}|Open in Gmail>"
@@ -208,7 +206,11 @@ def main():
     action_count = sum(1 for s in scores if s["action_needed"])
     print(f"  {action_count} email(s) require action.")
 
-    print("Posting digest to Slack…")
+    if not action_count:
+        print("Nothing to action — nothing posted to Slack.")
+        return
+
+    print("Posting to Slack…")
     post_digest_to_slack(webhook_url, emails, scores)
     print("Done.")
 
