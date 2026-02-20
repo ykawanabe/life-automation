@@ -3,13 +3,13 @@
 gmail_priority/main.py
 
 Fetches unread Gmail messages from the last 24 hours, scores each one
-priority 1-5 using Claude, and posts the top results (>= 4) to Slack.
+priority 1-5 using Claude, and posts a full prioritized digest to Slack.
 """
 
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 import anthropic
@@ -78,11 +78,8 @@ def get_gmail_service():
 
 
 def fetch_unread_emails(service):
-    """Return a list of dicts with subject, sender, and snippet for unread emails in the last 24 h."""
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
-    query = f"is:unread after:{since.strftime('%Y/%m/%d')}"
-
-    result = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
+    """Return a list of dicts with id, subject, sender, and snippet for all inbox emails."""
+    result = service.users().messages().list(userId="me", q="in:inbox category:primary", maxResults=100).execute()
     message_stubs = result.get("messages", [])
 
     emails = []
@@ -108,12 +105,17 @@ def fetch_unread_emails(service):
     return emails
 
 
+def gmail_link(message_id):
+    """Return a Gmail deep link for a given message ID."""
+    return f"https://mail.google.com/mail/u/0/#all/{message_id}"
+
+
 # ── Claude ────────────────────────────────────────────────────────────────────
 
 def score_emails(emails):
     """
     Send all emails to Claude in one call and return a list of
-    {"priority": int, "reason": str} dicts, one per email (same order).
+    {"priority": int, "reason": str, "action_needed": bool} dicts, one per email (same order).
     """
     client = anthropic.Anthropic()
 
@@ -123,9 +125,9 @@ def score_emails(emails):
     )
 
     prompt = f"""\
-You are an email triage assistant. Score each email's priority on a 1–5 scale and give a short reason.
+You are an email triage assistant. Score each email's priority and summarise it.
 
-Scale:
+Priority scale:
   5 – Urgent: requires immediate action (e.g. outages, deadlines, security alerts)
   4 – High: needs attention today (e.g. requests from managers, important clients)
   3 – Normal: routine business communication
@@ -136,30 +138,48 @@ Emails:
 {numbered}
 
 Return ONLY a valid JSON array with exactly {len(emails)} objects in the same order, no other text:
-[{{"priority": <1-5>, "reason": "<one concise sentence>"}}]"""
+[{{"priority": <1-5>, "reason": "<one concise sentence summary>", "action_needed": <true|false>}}]"""
 
     response = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=2048,
-        thinking={"type": "adaptive"},
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    # Skip thinking blocks; grab the text block
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text.strip())
+    text = response.content[0].text.strip()
+    # Strip markdown code fences if present (e.g. ```json ... ```)
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        text = text.rsplit("```", 1)[0].strip()
+    return json.loads(text)
 
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
 
-def post_to_slack(webhook_url, email, score):
-    """Post a single scored email to the Slack channel."""
-    emoji = PRIORITY_EMOJI.get(score["priority"], "⚪")
-    text = (
-        f"{emoji} *[{score['priority']}]* "
-        f"*{email['sender']}* — {email['subject']}\n"
-        f"_{score['reason']}_"
+def post_digest_to_slack(webhook_url, emails, scores):
+    """Post a full prioritized email digest to Slack as a single message."""
+    # Pair and sort by priority descending
+    paired = sorted(
+        zip(emails, scores),
+        key=lambda x: x[1]["priority"],
+        reverse=True,
     )
+
+    date_str = datetime.now().strftime("%b %d, %Y")
+    lines = [f"*📬 Email Digest — {date_str} — {len(emails)} unread*\n"]
+
+    for email, score in paired:
+        emoji = PRIORITY_EMOJI.get(score["priority"], "⚪")
+        link = gmail_link(email["id"])
+        action_tag = " ⚡ *Action needed*" if score["action_needed"] else ""
+        lines.append(
+            f"{emoji} *[{score['priority']}] {email['subject']}*{action_tag}\n"
+            f"From: {email['sender']}\n"
+            f"_{score['reason']}_\n"
+            f"<{link}|Open in Gmail>"
+        )
+
+    text = "\n\n".join(lines)
     resp = requests.post(webhook_url, json={"text": text}, timeout=10)
     resp.raise_for_status()
 
@@ -174,7 +194,7 @@ def main():
     print("Authenticating with Gmail…")
     service = get_gmail_service()
 
-    print("Fetching unread emails from the last 24 hours…")
+    print("Fetching inbox emails…")
     emails = fetch_unread_emails(service)
     print(f"  Found {len(emails)} unread email(s).")
 
@@ -185,22 +205,11 @@ def main():
     print("Scoring with Claude…")
     scores = score_emails(emails)
 
-    high_priority = [
-        (emails[i], scores[i])
-        for i in range(len(emails))
-        if scores[i]["priority"] >= 4
-    ]
-    print(f"  {len(high_priority)} email(s) with priority ≥ 4.")
+    action_count = sum(1 for s in scores if s["action_needed"])
+    print(f"  {action_count} email(s) require action.")
 
-    if not high_priority:
-        print("No high-priority emails — nothing posted to Slack.")
-        return
-
-    print("Posting to Slack…")
-    for email, score in high_priority:
-        post_to_slack(webhook_url, email, score)
-        print(f"  [{score['priority']}] {email['subject'][:60]}")
-
+    print("Posting digest to Slack…")
+    post_digest_to_slack(webhook_url, emails, scores)
     print("Done.")
 
 
