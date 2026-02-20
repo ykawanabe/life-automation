@@ -24,7 +24,30 @@ load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 TOKEN_PATH = Path("token.json")
-CREDENTIALS_PATH = Path("credentials.json")
+
+
+def find_credentials_file():
+    """
+    Return the path to the Google OAuth credentials file.
+
+    Accepts either the canonical name (credentials.json) or the raw filename
+    Google generates when you download from the Cloud Console
+    (client_secret_<id>.apps.googleusercontent.com.json).
+    """
+    canonical = Path("credentials.json")
+    if canonical.exists():
+        return canonical
+
+    matches = sorted(Path(".").glob("client_secret_*.json"))
+    if matches:
+        return matches[0]
+
+    sys.exit(
+        "ERROR: No Google OAuth credentials file found.\n"
+        "Download it from the Google Cloud Console "
+        "(APIs & Services → Credentials → OAuth 2.0 Client IDs → Download JSON)\n"
+        "and place it in the same directory as this script."
+    )
 
 PRIORITY_EMOJI = {1: "⚪", 2: "🟢", 3: "🔵", 4: "🟠", 5: "🔴"}
 
@@ -42,13 +65,8 @@ def get_gmail_service():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not CREDENTIALS_PATH.exists():
-                sys.exit(
-                    "ERROR: credentials.json not found.\n"
-                    "Download it from the Google Cloud Console "
-                    "(APIs & Services → Credentials → OAuth 2.0 Client IDs)."
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_PATH), SCOPES)
+            credentials_path = find_credentials_file()
+            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
             creds = flow.run_local_server(port=0)
 
         TOKEN_PATH.write_text(creds.to_json())

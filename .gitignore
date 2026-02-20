@@ -4,6 +4,7 @@
 # Gmail OAuth tokens and credentials — never commit these
 token.json
 credentials.json
+client_secret_*.json
 
 # Python
 __pycache__/
