@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gmail_priority.py
+gmail_priority/main.py
 
 Fetches unread Gmail messages from the last 24 hours, scores each one
 priority 1-5 using Claude, and posts the top results (>= 4) to Slack.
@@ -20,10 +20,12 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-load_dotenv()
+# Resolve paths relative to this file so the script works from any CWD
+HERE = Path(__file__).parent
+load_dotenv(HERE.parent / ".env")
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-TOKEN_PATH = Path("token.json")
+TOKEN_PATH = HERE / "token.json"
 
 
 def find_credentials_file():
@@ -33,12 +35,13 @@ def find_credentials_file():
     Accepts either the canonical name (credentials.json) or the raw filename
     Google generates when you download from the Cloud Console
     (client_secret_<id>.apps.googleusercontent.com.json).
+    Both are looked up relative to this script's directory.
     """
-    canonical = Path("credentials.json")
+    canonical = HERE / "credentials.json"
     if canonical.exists():
         return canonical
 
-    matches = sorted(Path(".").glob("client_secret_*.json"))
+    matches = sorted(HERE.glob("client_secret_*.json"))
     if matches:
         return matches[0]
 
@@ -46,7 +49,7 @@ def find_credentials_file():
         "ERROR: No Google OAuth credentials file found.\n"
         "Download it from the Google Cloud Console "
         "(APIs & Services → Credentials → OAuth 2.0 Client IDs → Download JSON)\n"
-        "and place it in the same directory as this script."
+        "and place it in the gmail_priority/ directory."
     )
 
 PRIORITY_EMOJI = {1: "⚪", 2: "🟢", 3: "🔵", 4: "🟠", 5: "🔴"}
